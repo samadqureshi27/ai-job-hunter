@@ -148,7 +148,8 @@ function isAggregatorListingPage(item: any) {
 
   return (
     /^\d+\+?\s.*\bjobs?\b/i.test(title) ||
-    /\/q-[a-z0-9-]+-jobs(-jobs)?\.html/i.test(url) ||
+    /\bjobs\s+in\b/i.test(title) ||
+    /\/q-.*-jobs(-jobs)?\.html/i.test(url) ||
     /\/jobs\/search/i.test(url) ||
     /\/jobs?-in-/i.test(url)
   );
