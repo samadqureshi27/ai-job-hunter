@@ -96,11 +96,20 @@ function cleanJsonResponse(text: string) {
   return cleanText;
 }
 
+const MAX_RETRY_DELAY_MS = 6000;
+
 function getRetryDelayMs(error: any, fallbackMs: number) {
   const message = typeof error?.message === "string" ? error.message : "";
   const match = message.match(/"retryDelay":"(\d+)s"/);
+  const suggested = match ? Number(match[1]) * 1000 : fallbackMs;
 
-  return match ? Number(match[1]) * 1000 : fallbackMs;
+  /*
+   * Gemini can suggest a retryDelay of 30-60s under load. With up to 10
+   * jobs retrying in parallel, honoring that verbatim makes a single hunt
+   * take a minute-plus. Capping it keeps worst-case latency bounded, at
+   * the cost of a slightly higher chance the retry also gets rate limited.
+   */
+  return Math.min(suggested, MAX_RETRY_DELAY_MS);
 }
 
 function isRateLimitError(error: any) {
@@ -117,7 +126,7 @@ function isDailyQuotaError(error: any) {
 
 async function generateContentWithRetry(
   params: Parameters<typeof ai.models.generateContent>[0],
-  retries = 2
+  retries = 1
 ) {
   for (let attempt = 0; ; attempt++) {
     try {
