@@ -1,10 +1,37 @@
 import { NextResponse } from "next/server";
 import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
+import { checkRateLimit, getClientKey } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 
+const PARSE_CV_RATE_LIMIT = 20;
+const PARSE_CV_RATE_WINDOW_MS = 5 * 60 * 1000;
+
 export async function POST(request: Request) {
+  const rateLimitKey = getClientKey(request, "parse-cv");
+  const rateLimit = checkRateLimit(
+    rateLimitKey,
+    PARSE_CV_RATE_LIMIT,
+    PARSE_CV_RATE_WINDOW_MS
+  );
+
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      {
+        error: `Too many uploads in a short time. Try again in ${Math.ceil(
+          rateLimit.retryAfterMs / 1000
+        )}s.`,
+      },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000)),
+        },
+      }
+    );
+  }
+
   try {
     const formData = await request.formData();
     const file = formData.get("file");

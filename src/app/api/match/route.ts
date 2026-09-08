@@ -1,8 +1,19 @@
 // app/api/match/route.ts
 import { NextResponse } from 'next/server';
 import { GoogleGenAI } from '@google/genai';
+import { checkRateLimit, getClientKey } from '@/lib/rateLimit';
+import {
+  truncateForPrompt,
+  wrapUntrustedContent,
+  UNTRUSTED_CONTENT_NOTICE,
+} from '@/lib/promptSafety';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+const MATCH_RATE_LIMIT = 10;
+const MATCH_RATE_WINDOW_MS = 5 * 60 * 1000;
+const MAX_RESUME_CHARS = 12000;
+const MAX_JOB_DESCRIPTION_CHARS = 6000;
 
 function cleanGeminiJson(text: string) {
   let clean = text.trim();
@@ -18,6 +29,29 @@ function cleanGeminiJson(text: string) {
 }
 
 export async function POST(request: Request) {
+  const rateLimitKey = getClientKey(request, 'match');
+  const rateLimit = checkRateLimit(
+    rateLimitKey,
+    MATCH_RATE_LIMIT,
+    MATCH_RATE_WINDOW_MS
+  );
+
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      {
+        error: `Too many requests in a short time. Try again in ${Math.ceil(
+          rateLimit.retryAfterMs / 1000
+        )}s.`,
+      },
+      {
+        status: 429,
+        headers: {
+          'Retry-After': String(Math.ceil(rateLimit.retryAfterMs / 1000)),
+        },
+      }
+    );
+  }
+
   try {
     const {
       resumeText,
@@ -70,10 +104,18 @@ ${companyType}
 ${culturePrompt}
 
 Candidate Resume:
-${resumeText}
+${wrapUntrustedContent(
+  'candidate_resume',
+  truncateForPrompt(String(resumeText), MAX_RESUME_CHARS)
+)}
 
 Job Description:
-${jobDescription}
+${wrapUntrustedContent(
+  'job_description',
+  truncateForPrompt(String(jobDescription), MAX_JOB_DESCRIPTION_CHARS)
+)}
+
+${UNTRUSTED_CONTENT_NOTICE}
 
 Evaluate:
 - Technical skill overlap
