@@ -1,7 +1,31 @@
 import { NextResponse } from "next/server";
 import { GoogleGenAI } from "@google/genai";
+import { checkRateLimit, getClientKey } from "@/lib/rateLimit";
+import {
+  truncateForPrompt,
+  wrapUntrustedContent,
+  UNTRUSTED_CONTENT_NOTICE,
+} from "@/lib/promptSafety";
+import {
+  buildCityRegex,
+  isAggregatorListingPage,
+  isClosedListing,
+  isLocationVerified as isLocationVerifiedForItem,
+  isRemoteMatch as isRemoteMatchForItem,
+  normalizeTitleKey,
+} from "@/lib/jobFilters";
+
+const MAX_RESUME_CHARS = 12000;
+const MAX_SNIPPET_CHARS = 2000;
 
 export const runtime = "nodejs";
+
+/*
+ * A hunt fans out to 3 web searches plus up to 10 parallel Gemini calls —
+ * the most expensive route in the app. Keep this tight.
+ */
+const HUNT_RATE_LIMIT = 5;
+const HUNT_RATE_WINDOW_MS = 5 * 60 * 1000;
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -132,30 +156,30 @@ function normalizeWorkType(workTypes: string[] = []) {
     .join(" OR ");
 }
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/*
- * Some job-board results returned by web search are search-result index
- * pages ("50+ React Jobs, Employment in Lahore") rather than a single
- * posting. They have no real single location or requirements, so both
- * the location filter and the AI analysis get garbage from them.
- */
-function isAggregatorListingPage(item: any) {
-  const title = String(item?.title || "");
-  const url = String(item?.link || "");
-
-  return (
-    /^\d+\+?\s.*\bjobs?\b/i.test(title) ||
-    /\bjobs\s+in\b/i.test(title) ||
-    /\/q-.*-jobs(-jobs)?\.html/i.test(url) ||
-    /\/jobs\/search/i.test(url) ||
-    /\/jobs?-in-/i.test(url)
-  );
-}
-
 export async function POST(request: Request) {
+  const rateLimitKey = getClientKey(request, "hunt");
+  const rateLimit = checkRateLimit(
+    rateLimitKey,
+    HUNT_RATE_LIMIT,
+    HUNT_RATE_WINDOW_MS
+  );
+
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      {
+        error: `Too many hunts in a short time. Try again in ${Math.ceil(
+          rateLimit.retryAfterMs / 1000
+        )}s.`,
+      },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(Math.ceil(rateLimit.retryAfterMs / 1000)),
+        },
+      }
+    );
+  }
+
   try {
     const body = (await request.json()) as HuntRequest;
 
@@ -319,9 +343,7 @@ export async function POST(request: Request) {
      * Deduplicate by URL.
      */
     const seenUrls = new Set<string>();
-
-    const closedListingPattern =
-      /(no longer accepting applications|position (has been )?filled|job (has )?(expired|closed)|this job (posting )?is (no longer )?(active|available)|applications? closed|hiring (has )?(paused|frozen))/i;
+    const seenTitleKeys = new Set<string>();
 
     const dedupedItems = combined.filter((item: any) => {
       const url = item?.link || "";
@@ -330,9 +352,13 @@ export async function POST(request: Request) {
         return false;
       }
 
-      const text = `${item?.title || ""} ${item?.snippet || ""}`;
+      const titleKey = normalizeTitleKey(item?.title || "");
 
-      if (closedListingPattern.test(text)) {
+      if (titleKey && seenTitleKeys.has(titleKey)) {
+        return false;
+      }
+
+      if (isClosedListing(item)) {
         return false;
       }
 
@@ -341,6 +367,10 @@ export async function POST(request: Request) {
       }
 
       seenUrls.add(url);
+
+      if (titleKey) {
+        seenTitleKeys.add(titleKey);
+      }
 
       return true;
     });
@@ -359,29 +389,14 @@ export async function POST(request: Request) {
      * jobs from other cities (e.g. Islamabad when Lahore was requested)
      * slip through.
      */
-    const citySegment = (location.split(",")[0] || location).trim();
-    const cityRegex =
-      citySegment.length >= 3
-        ? new RegExp(escapeRegExp(citySegment), "i")
-        : null;
+    const cityRegex = buildCityRegex(location);
     const remotePreferred = workTypes.includes("Remote");
-    const remotePattern = /\bremote\b|work from (home|anywhere)/i;
 
-    const isLocationVerified = (item: any) => {
-      if (!cityRegex) return true;
+    const isLocationVerified = (item: any) =>
+      isLocationVerifiedForItem(item, cityRegex);
 
-      const text = `${item?.title || ""} ${item?.snippet || ""}`;
-
-      return cityRegex.test(text);
-    };
-
-    const isRemoteMatch = (item: any) => {
-      if (!remotePreferred) return false;
-
-      const text = `${item?.title || ""} ${item?.snippet || ""}`;
-
-      return remotePattern.test(text);
-    };
+    const isRemoteMatch = (item: any) =>
+      isRemoteMatchForItem(item, remotePreferred);
 
     const locationFilteredItems = dedupedItems.filter(
       (item: any) => isLocationVerified(item) || isRemoteMatch(item)
@@ -465,16 +480,24 @@ Preferred keywords:
 ${keywords.join(", ") || "None"}
 
 Candidate CV:
-${resumeText}
+${wrapUntrustedContent(
+  "candidate_resume",
+  truncateForPrompt(resumeText, MAX_RESUME_CHARS)
+)}
 
 Job title:
-${jobTitle}
+${wrapUntrustedContent("job_title", jobTitle)}
 
 Job source:
 ${source}
 
 Job listing snippet:
-${snippet}
+${wrapUntrustedContent(
+  "job_snippet",
+  truncateForPrompt(snippet, MAX_SNIPPET_CHARS)
+)}
+
+${UNTRUSTED_CONTENT_NOTICE}
 
 Analyze the candidate against this job.
 
@@ -568,10 +591,6 @@ Return:
               ? workTypes.join(" / ")
               : "Not specified",
 
-          salary:
-            item?.salary ||
-            "",
-
           score,
 
           analysis:
@@ -616,10 +635,6 @@ Return:
             workTypes.length > 0
               ? workTypes.join(" / ")
               : "Not specified",
-
-          salary:
-            item?.salary ||
-            "",
 
           score: 50,
 

@@ -7,7 +7,6 @@ type Job = {
   company: string;
   location: string;
   workType: string;
-  salary?: string;
   score: number;
   analysis: string;
   url: string;
@@ -26,6 +25,22 @@ type DeepMatch = {
 };
 
 const WORK_TYPES = ["Remote", "Hybrid", "On-site"];
+
+const STORAGE_KEY = "jobhunter:state";
+
+type PersistedState = {
+  resume?: string;
+  fileName?: string;
+  keyword?: string;
+  location?: string;
+  workTypes?: string[];
+  experience?: string;
+  companyType?: string;
+  keywords?: string[];
+  maxResults?: number;
+  jobsList?: Job[];
+  savedJobs?: string[];
+};
 
 export default function Home() {
   const [resume, setResume] = useState("");
@@ -51,6 +66,8 @@ export default function Home() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
 
+  const [hydrated, setHydrated] = useState(false);
+
   const [deepMatch, setDeepMatch] = useState<DeepMatch | null>(null);
   const [deepMatchLoading, setDeepMatchLoading] = useState(false);
   const [deepMatchError, setDeepMatchError] = useState("");
@@ -58,6 +75,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
   const loadingStages = [
     "Reading your CV...",
@@ -168,6 +186,7 @@ export default function Home() {
 
   const startHunt = async () => {
     setError("");
+    setNotice("");
 
     if (!resume.trim()) {
       setError("Please upload your CV or paste your CV text first.");
@@ -225,7 +244,7 @@ export default function Home() {
       }
 
       if (data.message) {
-        setError(data.message);
+        setNotice(data.message);
       }
     } catch (err: any) {
       setError(err?.message || "Something went wrong while hunting jobs.");
@@ -272,6 +291,69 @@ export default function Home() {
       ring: "border-zinc-500/30 text-zinc-500",
     };
   };
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+
+      if (raw) {
+        const saved: PersistedState = JSON.parse(raw);
+
+        if (saved.resume) setResume(saved.resume);
+        if (saved.fileName) setFileName(saved.fileName);
+        if (saved.keyword) setKeyword(saved.keyword);
+        if (saved.location) setLocation(saved.location);
+        if (saved.workTypes) setWorkTypes(saved.workTypes);
+        if (saved.experience) setExperience(saved.experience);
+        if (saved.companyType) setCompanyType(saved.companyType);
+        if (saved.keywords) setKeywords(saved.keywords);
+        if (saved.maxResults) setMaxResults(saved.maxResults);
+        if (saved.jobsList) setJobsList(saved.jobsList);
+        if (saved.savedJobs) setSavedJobs(saved.savedJobs);
+      }
+    } catch {
+      // Corrupt or inaccessible storage — fall back to defaults silently.
+    } finally {
+      setHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+
+    try {
+      const toSave: PersistedState = {
+        resume,
+        fileName,
+        keyword,
+        location,
+        workTypes,
+        experience,
+        companyType,
+        keywords,
+        maxResults,
+        jobsList,
+        savedJobs,
+      };
+
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+    } catch {
+      // Storage full or unavailable (private browsing) — nothing to do.
+    }
+  }, [
+    hydrated,
+    resume,
+    fileName,
+    keyword,
+    location,
+    workTypes,
+    experience,
+    companyType,
+    keywords,
+    maxResults,
+    jobsList,
+    savedJobs,
+  ]);
 
   useEffect(() => {
     if (!selectedJob) return;
@@ -382,6 +464,17 @@ export default function Home() {
           >
             <span className="mt-0.5 text-red-400">⚠</span>
             <span>{error}</span>
+          </div>
+        )}
+
+        {/* Notice — informational, not a failure (e.g. quota limits, broadened location) */}
+        {notice && !error && (
+          <div
+            role="status"
+            className="animate-fade-in-up mb-6 flex items-start gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm text-amber-300"
+          >
+            <span className="mt-0.5 text-amber-400">ℹ</span>
+            <span>{notice}</span>
           </div>
         )}
 
