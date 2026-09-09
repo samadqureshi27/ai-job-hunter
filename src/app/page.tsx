@@ -28,6 +28,28 @@ const WORK_TYPES = ["Remote", "Hybrid", "On-site"];
 
 const STORAGE_KEY = "jobhunter:state";
 
+/*
+ * A platform-level failure (request too large, function timeout, gateway
+ * error) can return an empty or non-JSON body. response.json() on that
+ * throws a raw "Unexpected end of JSON input" that's meaningless to the
+ * user, so parse defensively and fall back to a status-based message.
+ */
+async function parseJsonResponse(response: Response) {
+  const rawText = await response.text();
+
+  try {
+    return rawText ? JSON.parse(rawText) : {};
+  } catch {
+    if (response.status === 413) {
+      throw new Error("The file or request was too large for the server to accept.");
+    }
+
+    throw new Error(
+      `Server returned an unexpected response (status ${response.status}).`
+    );
+  }
+}
+
 type PersistedState = {
   resume?: string;
   fileName?: string;
@@ -124,8 +146,8 @@ export default function Home() {
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
-      setError("CV file must be smaller than 5MB.");
+    if (file.size > 4 * 1024 * 1024) {
+      setError("CV file must be smaller than 4MB.");
       return;
     }
 
@@ -142,7 +164,7 @@ export default function Home() {
         body: formData,
       });
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (!response.ok) {
         throw new Error(data.error || "Failed to extract CV text.");
@@ -231,7 +253,7 @@ export default function Home() {
         }),
       });
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (!response.ok) {
         throw new Error(data.error || "Job hunting failed.");
@@ -395,7 +417,7 @@ export default function Home() {
         }),
       });
 
-      const data = await response.json();
+      const data = await parseJsonResponse(response);
 
       if (!response.ok) {
         throw new Error(data.error || "Deep match analysis failed.");

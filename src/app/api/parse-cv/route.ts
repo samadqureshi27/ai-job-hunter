@@ -43,9 +43,9 @@ export async function POST(request: Request) {
       );
     }
 
-    if (file.size > 5 * 1024 * 1024) {
+    if (file.size > 4 * 1024 * 1024) {
       return NextResponse.json(
-        { error: "CV file must be smaller than 5MB." },
+        { error: "CV file must be smaller than 4MB." },
         { status: 400 }
       );
     }
