@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { PDFParse } from "pdf-parse";
+import { extractText, getDocumentProxy } from "unpdf";
 import mammoth from "mammoth";
 import { checkRateLimit, getClientKey } from "@/lib/rateLimit";
 
@@ -97,15 +97,10 @@ export async function POST(request: Request) {
     // PDF
     // --------------------------------
     else if (fileName.endsWith(".pdf")) {
-      const parser = new PDFParse({
-        data: buffer,
-      });
-
-      const result = await parser.getText();
+      const pdf = await getDocumentProxy(new Uint8Array(buffer));
+      const result = await extractText(pdf, { mergePages: true });
 
       extractedText = result.text;
-
-      await parser.destroy();
     }
 
     // --------------------------------
